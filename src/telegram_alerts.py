@@ -200,12 +200,22 @@ class TelegramAlert:
 
         mvrv_status = 'Boost \u2713' if signal_data.get('mvrv_boost_eligible') else 'No Boost'
 
+        # Extract nullable numeric fields safely
+        mvrv = signal_data.get('mvrv')
+        dvol_zscore = signal_data.get('dvol_zscore')
+        prob_left_tail = signal_data.get('prob_left_tail') or 0
+        price = signal_data.get('price') or 0
+        drawdown = signal_data.get('drawdown') or 0
+
+        fmt_mvrv = f"{mvrv:.2f}" if mvrv is not None else "N/A"
+        fmt_dvol = f"{dvol_zscore:.2f}" if dvol_zscore is not None else "N/A"
+
         message = (
             f"\U0001f514 <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b>\n"
             f"\n"
             f"\U0001f4c5 Date: {signal_data.get('date', 'N/A')}\n"
-            f"\U0001f4b0 BTC Price: ${signal_data.get('price', 0):,.0f}\n"
-            f"\U0001f4c9 Drawdown: {signal_data.get('drawdown', 0)*100:.1f}%\n"
+            f"\U0001f4b0 BTC Price: ${price:,.0f}\n"
+            f"\U0001f4c9 Drawdown: {drawdown*100:.1f}%\n"
             f"\n"
             f"<b>SIGNAL: {signal_data.get('position', 'N/A')}</b>\n"
             f"\u26a1 Leverage: {signal_data.get('leverage', 0)}x\n"
@@ -215,10 +225,10 @@ class TelegramAlert:
             f"{hist_line}\n"
             f"\n"
             f"\u2501\u2501\u2501 Indicators \u2501\u2501\u2501\n"
-            f"\U0001f916 XGBoost Danger: {signal_data.get('prob_left_tail', 0)*100:.1f}%\n"
+            f"\U0001f916 XGBoost Danger: {prob_left_tail*100:.1f}%\n"
             f"{ema_line}"
-            f"\U0001f4c8 MVRV: {signal_data.get('mvrv', 0):.2f} ({mvrv_status})\n"
-            f"\U0001f321 DVOL Z-Score: {signal_data.get('dvol_zscore', 0):.2f}"
+            f"\U0001f4c8 MVRV: {fmt_mvrv} ({mvrv_status})\n"
+            f"\U0001f321 DVOL Z-Score: {fmt_dvol}"
         )
 
         success = self.send_message(message)
