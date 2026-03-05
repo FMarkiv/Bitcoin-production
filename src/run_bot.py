@@ -46,7 +46,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # v9 import - Updated from v8_production
 from v9_production import generate_signal, load_btc_data, compute_features, create_weekly_data, fetch_dvol_data
-from historical_context import get_historical_context, generate_historical_chart
+try:
+    from historical_context import get_historical_context, generate_historical_chart
+    HAS_HISTORICAL_CONTEXT = True
+except ImportError:
+    HAS_HISTORICAL_CONTEXT = False
+    get_historical_context = None
+    generate_historical_chart = None
 
 
 # ============================================================================
@@ -667,14 +673,15 @@ class TradingBot:
             if self.alert:
                 hist_context = None
                 chart_path = None
-                try:
-                    data_df = load_btc_data(data_path)
-                    hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
-                    if hist_context and hist_context.get('sample_size', 0) >= 10:
-                        chart_path = 'temp_historical_chart.png'
-                        generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
-                except Exception as e:
-                    logger.warning(f"Failed to generate historical context: {e}")
+                if HAS_HISTORICAL_CONTEXT:
+                    try:
+                        data_df = load_btc_data(data_path)
+                        hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
+                        if hist_context and hist_context.get('sample_size', 0) >= 10:
+                            chart_path = 'temp_historical_chart.png'
+                            generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate historical context: {e}")
 
                 self.alert.send_weekly_signal_with_context(signal, hist_context, chart_path)
 
@@ -818,14 +825,15 @@ class TradingBot:
                 if self.alert:
                     hist_context = None
                     chart_path = None
-                    try:
-                        data_df = load_btc_data(data_path)
-                        hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
-                        if hist_context and hist_context.get('sample_size', 0) >= 10:
-                            chart_path = 'temp_historical_chart.png'
-                            generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to generate historical context: {e}")
+                    if HAS_HISTORICAL_CONTEXT:
+                        try:
+                            data_df = load_btc_data(data_path)
+                            hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
+                            if hist_context and hist_context.get('sample_size', 0) >= 10:
+                                chart_path = 'temp_historical_chart.png'
+                                generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to generate historical context: {e}")
 
                     self.alert.send_weekly_signal_with_context(signal, hist_context, chart_path)
 
