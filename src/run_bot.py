@@ -1073,7 +1073,7 @@ def main():
             executor = None
 
     # Alerts
-    if args.mock:
+    if args.mock or args.dry_run:
         alert = MockTelegramAlert()
     else:
         alert = TelegramAlert()
