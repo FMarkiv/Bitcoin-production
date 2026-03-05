@@ -1,0 +1,78 @@
+name: BTC Tail Model v10
+
+on:
+  schedule:
+    # Run daily at 12:00 UTC for diversified deployment (1/7th daily)
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'once'
+        type: choice
+        options:
+          - once
+          - force
+          - dry-run
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        working-directory: .
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HL_PRIVATE_KEY: ${{ secrets.HL_PRIVATE_KEY }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'once' }}"
+
+          if [ "$MODE" = "force" ]; then
+            python src/run_bot.py --once --force --deployment diversified
+          elif [ "$MODE" = "dry-run" ]; then
+            python src/run_bot.py --once --force --dry-run --deployment diversified
+          else
+            python src/run_bot.py --once --force --deployment diversified
+          fi
+
+  # Run tests on push/PR (not on schedule)
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run signal tests
+        working-directory: .
+        run: python tests/test_v9_signal.py
+
+      - name: Run Telegram tests
+        working-directory: .
+        run: python tests/test_telegram.py

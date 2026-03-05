@@ -1,0 +1,16 @@
+# BTC Tail Model v9 - Dependencies
+
+# Core data processing
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Machine learning
+xgboost>=1.7.0
+
+# HTTP requests (for API calls)
+requests>=2.28.0
+
+# Hyperliquid exchange integration
+hyperliquid-python-sdk>=0.1.0
+
+# Optional: Telegram alerts (uses stdlib urllib, no extra deps needed)

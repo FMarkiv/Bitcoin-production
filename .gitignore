@@ -1,0 +1,38 @@
+# Environment variables (NEVER commit)
+.env
+.env.local
+.env.production
+
+# Private keys
+*.pem
+*.key
+
+# Bot state
+bot_state.json
+
+# Fetched data (auto-generated)
+btc_data.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Claude Code
+.claude/
+
+# Windows artifacts
+nul
