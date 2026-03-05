@@ -19,8 +19,10 @@ Usage:
 """
 
 import os
+import io
 import json
 import time
+import email.generator
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -85,6 +87,131 @@ class TelegramAlert:
 
         logger.error(f"Failed to send Telegram message after {self.MAX_RETRIES} attempts: {last_error}")
         return False
+
+    def send_photo(self, photo_path: str, caption: str = None) -> bool:
+        """Send a photo to Telegram using multipart form upload."""
+        if not self.enabled:
+            logger.debug(f"[TELEGRAM DISABLED] Would send photo: {photo_path}")
+            return False
+
+        if not os.path.exists(photo_path):
+            logger.error(f"Photo not found: {photo_path}")
+            return False
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+
+        last_error = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                # Build multipart form data
+                boundary = '----FormBoundary' + hex(int(time.time() * 1000))[2:]
+                body = io.BytesIO()
+
+                # chat_id field
+                body.write(f'--{boundary}\r\n'.encode())
+                body.write(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+                body.write(f'{self.chat_id}\r\n'.encode())
+
+                # parse_mode field
+                body.write(f'--{boundary}\r\n'.encode())
+                body.write(b'Content-Disposition: form-data; name="parse_mode"\r\n\r\n')
+                body.write(b'HTML\r\n')
+
+                # caption field
+                if caption:
+                    body.write(f'--{boundary}\r\n'.encode())
+                    body.write(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+                    body.write(f'{caption}\r\n'.encode())
+
+                # photo file
+                filename = os.path.basename(photo_path)
+                body.write(f'--{boundary}\r\n'.encode())
+                body.write(f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode())
+                body.write(b'Content-Type: image/png\r\n\r\n')
+                with open(photo_path, 'rb') as f:
+                    body.write(f.read())
+                body.write(b'\r\n')
+
+                body.write(f'--{boundary}--\r\n'.encode())
+
+                data = body.getvalue()
+                request = urllib.request.Request(url, data=data)
+                request.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+
+                response = urllib.request.urlopen(request, timeout=30)
+                result = json.loads(response.read().decode('utf-8'))
+                return result.get('ok', False)
+
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    ConnectionError, OSError) as e:
+                last_error = e
+                if attempt < self.MAX_RETRIES - 1:
+                    delay = self.BASE_DELAY * (2 ** attempt)
+                    logger.warning(f"Telegram photo send failed (attempt {attempt + 1}): {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+
+        logger.error(f"Failed to send Telegram photo after {self.MAX_RETRIES} attempts: {last_error}")
+        return False
+
+    def send_weekly_signal_with_context(
+        self,
+        signal_data: Dict[str, Any],
+        historical_context: dict,
+        chart_path: str = None
+    ) -> bool:
+        """Send weekly signal with historical context and optional chart."""
+        hist = historical_context
+
+        if hist and hist.get('sample_size', 0) >= 10:
+            hist_line = (
+                f"\u21b3 <b>Hist Avg:</b> "
+                f"1M: {hist['avg_1m_return']*100:+.1f}% | "
+                f"3M: {hist['avg_3m_return']*100:+.1f}% | "
+                f"1Y: {hist['avg_1y_return']*100:+.1f}%\n"
+                f"\u21b3 <b>Risk:</b> "
+                f"1Y DD: {hist['avg_1y_max_dd']*100:.1f}% | "
+                f"Win: {hist['win_rate_1y']*100:.0f}%"
+            )
+        elif hist:
+            hist_line = f"\u21b3 Insufficient historical data (n={hist.get('sample_size', 0)})"
+        else:
+            hist_line = "\u21b3 Historical context unavailable"
+
+        # EMA info
+        ema_200 = signal_data.get('ema_200')
+        above_ema = signal_data.get('above_ema_200')
+
+        message = (
+            f"\U0001f514 <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b>\n"
+            f"\n"
+            f"\U0001f4c5 Date: {signal_data.get('date', 'N/A')}\n"
+            f"\U0001f4b0 BTC Price: ${signal_data.get('price', 0):,.0f}\n"
+            f"\U0001f4c9 Drawdown: {signal_data.get('drawdown', 0)*100:.1f}%\n"
+            f"\n"
+            f"<b>SIGNAL: {signal_data.get('position', 'N/A')}</b>\n"
+            f"\u26a1 Leverage: {signal_data.get('leverage', 0)}x\n"
+            f"{signal_data.get('reasoning', '')}\n"
+            f"\n"
+            f"<b>\U0001f4ca Historical Context ({hist.get('dd_bucket', 'N/A') if hist else 'N/A'})</b>\n"
+            f"{hist_line}\n"
+            f"\n"
+            f"\u2501\u2501\u2501 Indicators \u2501\u2501\u2501\n"
+            f"\U0001f916 XGBoost Danger: {signal_data.get('prob_left_tail', 0)*100:.1f}%\n"
+            f"\U0001f4ca EMA 200: ${ema_200:,.0f} ({'Above \u2713' if above_ema else 'Below \u2717'})\n" if ema_200 else ""
+            f"\U0001f4c8 MVRV: {signal_data.get('mvrv', 0):.2f} ({'Boost \u2713' if signal_data.get('mvrv_boost_eligible') else 'No Boost'})\n"
+            f"\U0001f321 DVOL Z-Score: {signal_data.get('dvol_zscore', 0):.2f}"
+        )
+
+        success = self.send_message(message)
+
+        if chart_path and os.path.exists(chart_path):
+            chart_caption = (
+                f"\U0001f4c8 Historical returns from {hist.get('dd_bucket', 'current') if hist else 'current'} drawdown\n"
+                f"Based on {hist.get('sample_size', 0) if hist else 0} historical instances"
+            )
+            self.send_photo(chart_path, chart_caption)
+
+        return success
 
     def send_signal(self, signal: Dict[str, Any]) -> bool:
         """Send formatted weekly trading signal alert."""
@@ -304,6 +431,16 @@ class MockTelegramAlert:
 
     def send_message(self, message: str, parse_mode: str = 'HTML') -> bool:
         return self._record("message", message)
+
+    def send_photo(self, photo_path: str, caption: str = None) -> bool:
+        return self._record("photo", f"{photo_path}: {caption or ''}")
+
+    def send_weekly_signal_with_context(self, signal_data: Dict[str, Any],
+                                        historical_context: dict,
+                                        chart_path: str = None) -> bool:
+        return self._record("signal_with_context",
+                          f"{signal_data.get('position')} @ {signal_data.get('leverage')}x "
+                          f"(hist: {historical_context.get('dd_bucket', 'N/A') if historical_context else 'N/A'})")
 
     def send_signal(self, signal: Dict[str, Any]) -> bool:
         return self._record("signal", f"{signal.get('position')} @ {signal.get('leverage')}x")

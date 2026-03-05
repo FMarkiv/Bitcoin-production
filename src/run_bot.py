@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # v9 import - Updated from v8_production
 from v9_production import generate_signal, load_btc_data, compute_features, create_weekly_data, fetch_dvol_data
+from historical_context import get_historical_context, generate_historical_chart
 
 
 # ============================================================================
@@ -662,9 +663,24 @@ class TradingBot:
             logger.info(f"Signal: {signal['position']} @ {signal['leverage']}x")
             logger.info(f"Reasoning: {signal['reasoning']}")
 
-            # 3. Send signal alert (with specialized alerts for danger/ATH)
+            # 3. Send signal alert with historical context
             if self.alert:
-                self.alert.send_signal(signal)
+                hist_context = None
+                chart_path = None
+                try:
+                    data_df = load_btc_data(data_path)
+                    hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
+                    if hist_context and hist_context.get('sample_size', 0) >= 10:
+                        chart_path = 'temp_historical_chart.png'
+                        generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                except Exception as e:
+                    logger.warning(f"Failed to generate historical context: {e}")
+
+                self.alert.send_weekly_signal_with_context(signal, hist_context, chart_path)
+
+                # Clean up temp chart
+                if chart_path and os.path.exists(chart_path):
+                    os.remove(chart_path)
 
                 # Immediate danger alert
                 if signal.get('leverage') == 0 and signal.get('prob_left_tail', 0) > 0.20:
@@ -798,9 +814,23 @@ class TradingBot:
                 logger.info(f"Weekly signal: {signal['position']} @ {signal['leverage']}x")
                 logger.info(f"Reasoning: {signal['reasoning']}")
 
-                # Send signal alert (with specialized alerts for danger/ATH)
+                # Send signal alert with historical context
                 if self.alert:
-                    self.alert.send_signal(signal)
+                    hist_context = None
+                    chart_path = None
+                    try:
+                        data_df = load_btc_data(data_path)
+                        hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
+                        if hist_context and hist_context.get('sample_size', 0) >= 10:
+                            chart_path = 'temp_historical_chart.png'
+                            generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate historical context: {e}")
+
+                    self.alert.send_weekly_signal_with_context(signal, hist_context, chart_path)
+
+                    if chart_path and os.path.exists(chart_path):
+                        os.remove(chart_path)
 
                     if signal.get('leverage') == 0 and signal.get('prob_left_tail', 0) > 0.20:
                         self.alert.send_danger_alert(signal)
