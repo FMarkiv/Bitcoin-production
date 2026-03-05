@@ -22,7 +22,7 @@ import os
 import io
 import json
 import time
-import email.generator
+import html as html_mod
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -210,6 +210,9 @@ class TelegramAlert:
         fmt_mvrv = f"{mvrv:.2f}" if mvrv is not None else "N/A"
         fmt_dvol = f"{dvol_zscore:.2f}" if dvol_zscore is not None else "N/A"
 
+        # HTML-escape reasoning (may contain < from "MVRV=2.50 < 3.0")
+        reasoning = html_mod.escape(signal_data.get('reasoning', ''))
+
         message = (
             f"\U0001f514 <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b>\n"
             f"\n"
@@ -219,7 +222,7 @@ class TelegramAlert:
             f"\n"
             f"<b>SIGNAL: {signal_data.get('position', 'N/A')}</b>\n"
             f"\u26a1 Leverage: {signal_data.get('leverage', 0)}x\n"
-            f"{signal_data.get('reasoning', '')}\n"
+            f"{reasoning}\n"
             f"\n"
             f"<b>\U0001f4ca Historical Context ({hist.get('dd_bucket', 'N/A') if hist else 'N/A'})</b>\n"
             f"{hist_line}\n"
@@ -294,7 +297,7 @@ class TelegramAlert:
             f"<b>SIGNAL: {position}</b>\n"
             f"<b>Leverage: {leverage}x</b>\n"
             f"\n"
-            f"<b>Reasoning:</b> {signal.get('reasoning', 'N/A')}\n"
+            f"<b>Reasoning:</b> {html_mod.escape(signal.get('reasoning', 'N/A'))}\n"
             f"\n"
             f"--- Indicators ---\n"
             f"XGBoost Danger: {danger_prob:.1%}\n"
@@ -370,8 +373,8 @@ class TelegramAlert:
         message = (
             f"\U0001f6a8 <b>ERROR</b> \U0001f6a8\n"
             f"\n"
-            f"<b>Context:</b> {context}\n"
-            f"<b>Error:</b> {error}\n"
+            f"<b>Context:</b> {html_mod.escape(context)}\n"
+            f"<b>Error:</b> {html_mod.escape(error)}\n"
             f"\n"
             f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
         )

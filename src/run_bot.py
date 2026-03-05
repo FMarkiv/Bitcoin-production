@@ -1080,8 +1080,8 @@ def main():
             print("Continuing in dry-run mode")
             executor = None
 
-    # Alerts
-    if args.mock or args.dry_run:
+    # Alerts (dry-run still sends real alerts, only --mock uses mock)
+    if args.mock:
         alert = MockTelegramAlert()
     else:
         alert = TelegramAlert()
