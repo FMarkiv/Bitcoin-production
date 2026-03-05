@@ -773,8 +773,9 @@ class TradingBot:
         today_str = now.strftime('%Y-%m-%d')
 
         try:
-            # 1. Check if we need to generate a new signal (Sunday)
-            if is_signal_time() and self.last_signal_date != today_str:
+            # 1. Check if we need to generate a new signal (Sunday, or forced)
+            should_generate = force_rebalance or (is_signal_time() and self.last_signal_date != today_str)
+            if should_generate:
                 print("\n" + "=" * 60)
                 print("SIGNAL DAY: Generating weekly signal")
                 print("=" * 60)

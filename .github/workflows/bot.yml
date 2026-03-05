@@ -43,10 +43,8 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.mode || 'once' }}"
 
-          if [ "$MODE" = "force" ]; then
-            python src/run_bot.py --once --force --deployment diversified
-          elif [ "$MODE" = "dry-run" ]; then
-            python src/run_bot.py --once --force --dry-run --deployment diversified
+          if [ "$MODE" = "dry-run" ]; then
+            python src/run_bot.py --once --force --dry-run --deployment single
           else
             python src/run_bot.py --once --force --deployment diversified
           fi
