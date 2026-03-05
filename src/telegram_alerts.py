@@ -22,7 +22,6 @@ import os
 import io
 import json
 import time
-import email.generator
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -181,6 +180,14 @@ class TelegramAlert:
         ema_200 = signal_data.get('ema_200')
         above_ema = signal_data.get('above_ema_200')
 
+        if ema_200:
+            above_label = "Above \u2713" if above_ema else "Below \u2717"
+            ema_line = f"\U0001f4ca EMA 200: ${ema_200:,.0f} ({above_label})\n"
+        else:
+            ema_line = ""
+
+        boost_label = "Boost \u2713" if signal_data.get('mvrv_boost_eligible') else "No Boost"
+
         message = (
             f"\U0001f514 <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b>\n"
             f"\n"
@@ -197,8 +204,8 @@ class TelegramAlert:
             f"\n"
             f"\u2501\u2501\u2501 Indicators \u2501\u2501\u2501\n"
             f"\U0001f916 XGBoost Danger: {signal_data.get('prob_left_tail', 0)*100:.1f}%\n"
-            f"\U0001f4ca EMA 200: ${ema_200:,.0f} ({'Above \u2713' if above_ema else 'Below \u2717'})\n" if ema_200 else ""
-            f"\U0001f4c8 MVRV: {signal_data.get('mvrv', 0):.2f} ({'Boost \u2713' if signal_data.get('mvrv_boost_eligible') else 'No Boost'})\n"
+            f"{ema_line}"
+            f"\U0001f4c8 MVRV: {signal_data.get('mvrv', 0):.2f} ({boost_label})\n"
             f"\U0001f321 DVOL Z-Score: {signal_data.get('dvol_zscore', 0):.2f}"
         )
 
