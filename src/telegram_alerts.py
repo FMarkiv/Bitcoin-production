@@ -163,14 +163,26 @@ class TelegramAlert:
         hist = historical_context
 
         if hist and hist.get('sample_size', 0) >= 10:
+            avg_1m = hist.get('avg_1m_return')
+            avg_3m = hist.get('avg_3m_return')
+            avg_1y = hist.get('avg_1y_return')
+            avg_1y_dd = hist.get('avg_1y_max_dd')
+            win_1y = hist.get('win_rate_1y')
+
+            fmt_1m = f"{avg_1m*100:+.1f}%" if avg_1m is not None else "N/A"
+            fmt_3m = f"{avg_3m*100:+.1f}%" if avg_3m is not None else "N/A"
+            fmt_1y = f"{avg_1y*100:+.1f}%" if avg_1y is not None else "N/A"
+            fmt_dd = f"{avg_1y_dd*100:.1f}%" if avg_1y_dd is not None else "N/A"
+            fmt_win = f"{win_1y*100:.0f}%" if win_1y is not None else "N/A"
+
             hist_line = (
                 f"\u21b3 <b>Hist Avg:</b> "
-                f"1M: {hist['avg_1m_return']*100:+.1f}% | "
-                f"3M: {hist['avg_3m_return']*100:+.1f}% | "
-                f"1Y: {hist['avg_1y_return']*100:+.1f}%\n"
+                f"1M: {fmt_1m} | "
+                f"3M: {fmt_3m} | "
+                f"1Y: {fmt_1y}\n"
                 f"\u21b3 <b>Risk:</b> "
-                f"1Y DD: {hist['avg_1y_max_dd']*100:.1f}% | "
-                f"Win: {hist['win_rate_1y']*100:.0f}%"
+                f"1Y DD: {fmt_dd} | "
+                f"Win: {fmt_win}"
             )
         elif hist:
             hist_line = f"\u21b3 Insufficient historical data (n={hist.get('sample_size', 0)})"
