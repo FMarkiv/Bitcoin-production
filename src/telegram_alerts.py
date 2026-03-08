@@ -19,19 +19,93 @@ Usage:
 """
 
 import os
-import io
 import json
 import time
-import email.generator
-import urllib.request
-import urllib.parse
-import urllib.error
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
+import requests
 
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+# Unicode symbols extracted to avoid f-string backslash issues
+CHECK = '\u2713'
+CROSS = '\u2717'
+ARROW = '\u21b3'
+LINE = '\u2501'
+BLOCK_FULL = '\u2588'
+BLOCK_LIGHT = '\u2591'
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+
+
+def _format_hist_context(hist: Optional[dict]) -> str:
+    """Format historical context block for any message type."""
+    if not hist:
+        return f"{ARROW} Historical context unavailable"
+
+    bucket = hist.get('dd_bucket', 'N/A')
+
+    if hist.get('sample_size', 0) < 10:
+        return (
+            f"\U0001f4ca <b>Historical Context ({bucket})</b>\n"
+            f"{ARROW} Insufficient data (n={hist.get('sample_size', 0)})"
+        )
+
+    avg_1m = hist.get('avg_1m_return')
+    avg_3m = hist.get('avg_3m_return')
+    avg_1y = hist.get('avg_1y_return')
+    avg_dd = hist.get('avg_1y_max_dd')
+    win_1y = hist.get('win_rate_1y')
+
+    hist_avg_parts = []
+    if avg_1m is not None:
+        hist_avg_parts.append(f"1M: {avg_1m*100:+.1f}%")
+    if avg_3m is not None:
+        hist_avg_parts.append(f"3M: {avg_3m*100:+.1f}%")
+    if avg_1y is not None:
+        hist_avg_parts.append(f"1Y: {avg_1y*100:+.1f}%")
+
+    risk_parts = []
+    if avg_dd is not None:
+        risk_parts.append(f"1Y DD: {avg_dd*100:.1f}%")
+    if win_1y is not None:
+        risk_parts.append(f"Win: {win_1y*100:.0f}%")
+
+    lines = [f"\U0001f4ca <b>Historical Context ({bucket})</b>"]
+    if hist_avg_parts:
+        lines.append(f"{ARROW} <b>Hist Avg:</b> {' | '.join(hist_avg_parts)}")
+    if risk_parts:
+        lines.append(f"{ARROW} <b>Risk:</b> {' | '.join(risk_parts)}")
+
+    return '\n'.join(lines)
+
+
+def _format_ema(ema_200, above_ema) -> str:
+    if ema_200 is None:
+        return "EMA 200: N/A"
+    status = f"Above {CHECK}" if above_ema else f"Below {CROSS}"
+    return f"EMA 200: ${ema_200:,.0f} ({status})"
+
+
+def _format_mvrv(mvrv, boost_eligible) -> str:
+    if mvrv is None:
+        return "MVRV: N/A"
+    status = "Boost Active" if boost_eligible else "No Boost"
+    return f"MVRV: {mvrv:.2f} ({status})"
+
+
+def _format_dvol(dvol_zscore, dvol_applied=False, base_leverage=None) -> str:
+    if dvol_zscore is None:
+        return "DVOL Z-Score: N/A"
+    line = f"DVOL Z-Score: {dvol_zscore:.2f}"
+    if dvol_applied and base_leverage is not None:
+        line += f" (reduced from {base_leverage}x)"
+    return line
 
 
 class TelegramAlert:
@@ -39,6 +113,7 @@ class TelegramAlert:
 
     MAX_RETRIES = 3
     BASE_DELAY = 1.0
+    API_BASE = "https://api.telegram.org/bot"
 
     def __init__(self,
                  bot_token: Optional[str] = None,
@@ -56,40 +131,49 @@ class TelegramAlert:
         if self.enabled:
             logger.info("Telegram alerts enabled")
 
+    def _api_url(self, method: str) -> str:
+        return f"{self.API_BASE}{self.bot_token}/{method}"
+
     def send_message(self, message: str, parse_mode: str = 'HTML') -> bool:
         """Send a message via Telegram with retry logic."""
         if not self.enabled:
             logger.debug(f"[TELEGRAM DISABLED] Would send: {message[:100]}...")
             return False
 
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-
-        data = urllib.parse.urlencode({
+        payload = {
             'chat_id': self.chat_id,
             'text': message,
             'parse_mode': parse_mode,
-        }).encode('utf-8')
+        }
 
         last_error = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                request = urllib.request.Request(url, data=data)
-                response = urllib.request.urlopen(request, timeout=10)
-                result = json.loads(response.read().decode('utf-8'))
-                return result.get('ok', False)
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                    ConnectionError, OSError) as e:
+                resp = requests.post(
+                    self._api_url('sendMessage'),
+                    json=payload,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                return resp.json().get('ok', False)
+            except requests.RequestException as e:
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
                     delay = self.BASE_DELAY * (2 ** attempt)
-                    logger.warning(f"Telegram send failed (attempt {attempt + 1}): {e}. Retrying in {delay}s...")
+                    logger.warning(
+                        f"Telegram send failed (attempt {attempt + 1}): {e}. "
+                        f"Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
 
-        logger.error(f"Failed to send Telegram message after {self.MAX_RETRIES} attempts: {last_error}")
+        logger.error(
+            f"Failed to send Telegram message after {self.MAX_RETRIES} "
+            f"attempts: {last_error}"
+        )
         return False
 
     def send_photo(self, photo_path: str, caption: str = None) -> bool:
-        """Send a photo to Telegram using multipart form upload."""
+        """Send a photo to Telegram."""
         if not self.enabled:
             logger.debug(f"[TELEGRAM DISABLED] Would send photo: {photo_path}")
             return False
@@ -98,59 +182,36 @@ class TelegramAlert:
             logger.error(f"Photo not found: {photo_path}")
             return False
 
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        data = {'chat_id': self.chat_id, 'parse_mode': 'HTML'}
+        if caption:
+            data['caption'] = caption
 
         last_error = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                # Build multipart form data
-                boundary = '----FormBoundary' + hex(int(time.time() * 1000))[2:]
-                body = io.BytesIO()
-
-                # chat_id field
-                body.write(f'--{boundary}\r\n'.encode())
-                body.write(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
-                body.write(f'{self.chat_id}\r\n'.encode())
-
-                # parse_mode field
-                body.write(f'--{boundary}\r\n'.encode())
-                body.write(b'Content-Disposition: form-data; name="parse_mode"\r\n\r\n')
-                body.write(b'HTML\r\n')
-
-                # caption field
-                if caption:
-                    body.write(f'--{boundary}\r\n'.encode())
-                    body.write(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
-                    body.write(f'{caption}\r\n'.encode())
-
-                # photo file
-                filename = os.path.basename(photo_path)
-                body.write(f'--{boundary}\r\n'.encode())
-                body.write(f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode())
-                body.write(b'Content-Type: image/png\r\n\r\n')
                 with open(photo_path, 'rb') as f:
-                    body.write(f.read())
-                body.write(b'\r\n')
-
-                body.write(f'--{boundary}--\r\n'.encode())
-
-                data = body.getvalue()
-                request = urllib.request.Request(url, data=data)
-                request.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-
-                response = urllib.request.urlopen(request, timeout=30)
-                result = json.loads(response.read().decode('utf-8'))
-                return result.get('ok', False)
-
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                    ConnectionError, OSError) as e:
+                    resp = requests.post(
+                        self._api_url('sendPhoto'),
+                        data=data,
+                        files={'photo': f},
+                        timeout=30,
+                    )
+                resp.raise_for_status()
+                return resp.json().get('ok', False)
+            except requests.RequestException as e:
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
                     delay = self.BASE_DELAY * (2 ** attempt)
-                    logger.warning(f"Telegram photo send failed (attempt {attempt + 1}): {e}. Retrying in {delay}s...")
+                    logger.warning(
+                        f"Telegram photo send failed (attempt {attempt + 1}): "
+                        f"{e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
 
-        logger.error(f"Failed to send Telegram photo after {self.MAX_RETRIES} attempts: {last_error}")
+        logger.error(
+            f"Failed to send Telegram photo after {self.MAX_RETRIES} "
+            f"attempts: {last_error}"
+        )
         return False
 
     def send_weekly_signal_with_context(
@@ -160,26 +221,10 @@ class TelegramAlert:
         chart_path: str = None
     ) -> bool:
         """Send weekly signal with historical context and optional chart."""
-        hist = historical_context
-
-        if hist and hist.get('sample_size', 0) >= 10:
-            hist_line = (
-                f"\u21b3 <b>Hist Avg:</b> "
-                f"1M: {hist['avg_1m_return']*100:+.1f}% | "
-                f"3M: {hist['avg_3m_return']*100:+.1f}% | "
-                f"1Y: {hist['avg_1y_return']*100:+.1f}%\n"
-                f"\u21b3 <b>Risk:</b> "
-                f"1Y DD: {hist['avg_1y_max_dd']*100:.1f}% | "
-                f"Win: {hist['win_rate_1y']*100:.0f}%"
-            )
-        elif hist:
-            hist_line = f"\u21b3 Insufficient historical data (n={hist.get('sample_size', 0)})"
-        else:
-            hist_line = "\u21b3 Historical context unavailable"
-
-        # EMA info
         ema_200 = signal_data.get('ema_200')
         above_ema = signal_data.get('above_ema_200')
+
+        hist_block = _format_hist_context(historical_context)
 
         message = (
             f"\U0001f514 <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b>\n"
@@ -192,28 +237,32 @@ class TelegramAlert:
             f"\u26a1 Leverage: {signal_data.get('leverage', 0)}x\n"
             f"{signal_data.get('reasoning', '')}\n"
             f"\n"
-            f"<b>\U0001f4ca Historical Context ({hist.get('dd_bucket', 'N/A') if hist else 'N/A'})</b>\n"
-            f"{hist_line}\n"
+            f"{hist_block}\n"
             f"\n"
-            f"\u2501\u2501\u2501 Indicators \u2501\u2501\u2501\n"
+            f"{LINE*3} Indicators {LINE*3}\n"
             f"\U0001f916 XGBoost Danger: {signal_data.get('prob_left_tail', 0)*100:.1f}%\n"
-            f"\U0001f4ca EMA 200: ${ema_200:,.0f} ({'Above \u2713' if above_ema else 'Below \u2717'})\n" if ema_200 else ""
-            f"\U0001f4c8 MVRV: {signal_data.get('mvrv', 0):.2f} ({'Boost \u2713' if signal_data.get('mvrv_boost_eligible') else 'No Boost'})\n"
-            f"\U0001f321 DVOL Z-Score: {signal_data.get('dvol_zscore', 0):.2f}"
+            f"\U0001f4ca {_format_ema(ema_200, above_ema)}\n"
+            f"\U0001f4c8 {_format_mvrv(signal_data.get('mvrv'), signal_data.get('mvrv_boost_eligible'))}\n"
+            f"\U0001f321 {_format_dvol(signal_data.get('dvol_zscore'))}\n"
+            f"\n"
+            f"<i>{_timestamp()}</i>"
         )
 
         success = self.send_message(message)
 
         if chart_path and os.path.exists(chart_path):
+            bucket = historical_context.get('dd_bucket', 'current') if historical_context else 'current'
+            sample = historical_context.get('sample_size', 0) if historical_context else 0
             chart_caption = (
-                f"\U0001f4c8 Historical returns from {hist.get('dd_bucket', 'current') if hist else 'current'} drawdown\n"
-                f"Based on {hist.get('sample_size', 0) if hist else 0} historical instances"
+                f"\U0001f4c8 Historical returns from {bucket} drawdown\n"
+                f"Based on {sample} historical instances"
             )
             self.send_photo(chart_path, chart_caption)
 
         return success
 
-    def send_signal(self, signal: Dict[str, Any]) -> bool:
+    def send_signal(self, signal: Dict[str, Any],
+                    historical_context: Optional[dict] = None) -> bool:
         """Send formatted weekly trading signal alert."""
         leverage = signal.get('leverage', 0)
         position = signal.get('position', 'UNKNOWN')
@@ -227,33 +276,15 @@ class TelegramAlert:
         else:
             emoji = "\u2705"  # check mark
 
-        # EMA info
-        ema_200 = signal.get('ema_200')
-        above_ema = signal.get('above_ema_200')
-        if ema_200 is not None:
-            ema_line = f"EMA 200: ${ema_200:,.0f} ({'Above' if above_ema else 'Below'})"
-        else:
-            ema_line = "EMA 200: N/A"
+        ema_line = _format_ema(signal.get('ema_200'), signal.get('above_ema_200'))
+        mvrv_line = _format_mvrv(signal.get('mvrv'), signal.get('mvrv_boost_eligible', False))
+        dvol_line = _format_dvol(
+            signal.get('dvol_zscore'),
+            signal.get('dvol_filter_applied', False),
+            signal.get('base_leverage', leverage),
+        )
 
-        # MVRV info
-        mvrv = signal.get('mvrv')
-        mvrv_boost = signal.get('mvrv_boost_eligible', False)
-        if mvrv is not None:
-            mvrv_line = f"MVRV: {mvrv:.2f} ({'Boost Active' if mvrv_boost else 'No Boost'})"
-        else:
-            mvrv_line = "MVRV: N/A"
-
-        # DVOL info
-        dvol_zscore = signal.get('dvol_zscore')
-        dvol_applied = signal.get('dvol_filter_applied', False)
-        if dvol_zscore is not None:
-            dvol_line = f"DVOL Z-Score: {dvol_zscore:.2f}"
-            if dvol_applied:
-                dvol_line += f" (reduced from {signal.get('base_leverage', leverage)}x)"
-        else:
-            dvol_line = "DVOL Z-Score: N/A"
-
-        danger_prob = signal.get('prob_left_tail', 0)
+        hist_block = _format_hist_context(historical_context)
 
         message = (
             f"{emoji} <b>BTC TAIL MODEL v10 - WEEKLY SIGNAL</b> {emoji}\n"
@@ -267,23 +298,28 @@ class TelegramAlert:
             f"\n"
             f"<b>Reasoning:</b> {signal.get('reasoning', 'N/A')}\n"
             f"\n"
-            f"--- Indicators ---\n"
-            f"XGBoost Danger: {danger_prob:.1%}\n"
+            f"{hist_block}\n"
+            f"\n"
+            f"{LINE*3} Indicators {LINE*3}\n"
+            f"XGBoost Danger: {signal.get('prob_left_tail', 0):.1%}\n"
             f"{ema_line}\n"
             f"{mvrv_line}\n"
             f"{dvol_line}\n"
             f"Near ATH: {'Yes' if signal.get('near_ath') else 'No'}\n"
             f"ATH Breakout: {'Yes' if signal.get('ath_breakout') else 'No'}\n"
             f"\n"
-            f"<i>Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
 
-    def send_danger_alert(self, signal: Dict[str, Any]) -> bool:
+    def send_danger_alert(self, signal: Dict[str, Any],
+                          historical_context: Optional[dict] = None) -> bool:
         """Send IMMEDIATE danger alert when XGBoost probability exceeds threshold."""
         danger_prob = signal.get('prob_left_tail', 0)
         price = signal.get('price', 0)
+
+        hist_block = _format_hist_context(historical_context)
 
         message = (
             f"\u26a0\ufe0f\u26a0\ufe0f\u26a0\ufe0f <b>DANGER SIGNAL ACTIVATED</b> \u26a0\ufe0f\u26a0\ufe0f\u26a0\ufe0f\n"
@@ -293,14 +329,19 @@ class TelegramAlert:
             f"\n"
             f"<b>ACTION: GO TO CASH IMMEDIATELY</b>\n"
             f"\n"
-            f"<i>BTC Tail Model v10 - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"{hist_block}\n"
+            f"\n"
+            f"<i>BTC Tail Model v10 - {_timestamp()}</i>"
         )
 
         return self.send_message(message)
 
-    def send_ath_breakout_alert(self, signal: Dict[str, Any]) -> bool:
+    def send_ath_breakout_alert(self, signal: Dict[str, Any],
+                                historical_context: Optional[dict] = None) -> bool:
         """Send alert when ATH breakout signal fires (10x leverage)."""
         price = signal.get('price', 0)
+
+        hist_block = _format_hist_context(historical_context)
 
         message = (
             f"\U0001f680\U0001f680\U0001f680 <b>ATH BREAKOUT SIGNAL</b> \U0001f680\U0001f680\U0001f680\n"
@@ -310,7 +351,9 @@ class TelegramAlert:
             f"\n"
             f"<b>SIGNAL: 10x LEVER</b>\n"
             f"\n"
-            f"<i>BTC Tail Model v10 - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"{hist_block}\n"
+            f"\n"
+            f"<i>BTC Tail Model v10 - {_timestamp()}</i>"
         )
 
         return self.send_message(message)
@@ -331,7 +374,7 @@ class TelegramAlert:
             f"<b>Details:</b>\n"
             f"{json.dumps(execution, indent=2, default=str)[:500]}\n"
             f"\n"
-            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
@@ -344,7 +387,7 @@ class TelegramAlert:
             f"<b>Context:</b> {context}\n"
             f"<b>Error:</b> {error}\n"
             f"\n"
-            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
@@ -359,7 +402,7 @@ class TelegramAlert:
             f"<b>Current Position:</b> {status.get('current_position', 'N/A')}\n"
             f"<b>Account Value:</b> ${status.get('account_value', 0):,.2f}\n"
             f"\n"
-            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
@@ -378,10 +421,10 @@ class TelegramAlert:
         if target_leverage > 0:
             progress_pct = min(100, max(0, (new_leverage / target_leverage) * 100))
             filled = int(progress_pct / 10)
-            bar = "\u2588" * filled + "\u2591" * (10 - filled)
+            bar = BLOCK_FULL * filled + BLOCK_LIGHT * (10 - filled)
         else:
             progress_pct = 100
-            bar = "\u2588" * 10
+            bar = BLOCK_FULL * 10
 
         message = (
             f"{emoji} <b>DAILY EXECUTION {status}</b>\n"
@@ -393,13 +436,16 @@ class TelegramAlert:
             f"\n"
             f"<b>Progress:</b> [{bar}] {progress_pct:.0f}%\n"
             f"\n"
-            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
 
-    def send_status(self, status_data: Dict[str, Any]) -> bool:
+    def send_status(self, status_data: Dict[str, Any],
+                    historical_context: Optional[dict] = None) -> bool:
         """Send on-demand status report."""
+        hist_block = _format_hist_context(historical_context)
+
         message = (
             f"\U0001f4cb <b>STATUS REPORT</b>\n"
             f"\n"
@@ -410,7 +456,9 @@ class TelegramAlert:
             f"<b>Account Value:</b> ${status_data.get('account_value', 0):,.2f}\n"
             f"<b>Danger Prob:</b> {status_data.get('danger_prob', 0):.1%}\n"
             f"\n"
-            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            f"{hist_block}\n"
+            f"\n"
+            f"<i>{_timestamp()}</i>"
         )
 
         return self.send_message(message)
@@ -438,17 +486,22 @@ class MockTelegramAlert:
     def send_weekly_signal_with_context(self, signal_data: Dict[str, Any],
                                         historical_context: dict,
                                         chart_path: str = None) -> bool:
-        return self._record("signal_with_context",
-                          f"{signal_data.get('position')} @ {signal_data.get('leverage')}x "
-                          f"(hist: {historical_context.get('dd_bucket', 'N/A') if historical_context else 'N/A'})")
+        return self._record(
+            "signal_with_context",
+            f"{signal_data.get('position')} @ {signal_data.get('leverage')}x "
+            f"(hist: {historical_context.get('dd_bucket', 'N/A') if historical_context else 'N/A'})"
+        )
 
-    def send_signal(self, signal: Dict[str, Any]) -> bool:
+    def send_signal(self, signal: Dict[str, Any],
+                    historical_context: Optional[dict] = None) -> bool:
         return self._record("signal", f"{signal.get('position')} @ {signal.get('leverage')}x")
 
-    def send_danger_alert(self, signal: Dict[str, Any]) -> bool:
+    def send_danger_alert(self, signal: Dict[str, Any],
+                          historical_context: Optional[dict] = None) -> bool:
         return self._record("danger", f"prob={signal.get('prob_left_tail', 0):.1%}")
 
-    def send_ath_breakout_alert(self, signal: Dict[str, Any]) -> bool:
+    def send_ath_breakout_alert(self, signal: Dict[str, Any],
+                                historical_context: Optional[dict] = None) -> bool:
         return self._record("ath_breakout", f"price=${signal.get('price', 0):,.0f}")
 
     def send_execution_report(self, signal, execution, success) -> bool:
@@ -464,7 +517,8 @@ class MockTelegramAlert:
                              target_leverage, remaining_delta, success) -> bool:
         return self._record("daily", f"{leverage_change:+.3f}x -> {new_leverage:.2f}x")
 
-    def send_status(self, status_data: Dict[str, Any]) -> bool:
+    def send_status(self, status_data: Dict[str, Any],
+                    historical_context: Optional[dict] = None) -> bool:
         return self._record("status", f"{status_data.get('position', 'N/A')}")
 
 
@@ -502,9 +556,20 @@ if __name__ == "__main__":
             'above_ema_200': True,
             'mvrv': 2.5,
             'mvrv_boost_eligible': True,
+            'dvol_zscore': 0.15,
         }
 
-        success = alert.send_signal(test_signal)
+        test_hist = {
+            'dd_bucket': '-30% to -25%',
+            'sample_size': 42,
+            'avg_1m_return': 0.007,
+            'avg_3m_return': 0.024,
+            'avg_1y_return': 0.078,
+            'avg_1y_max_dd': -0.124,
+            'win_rate_1y': 0.68,
+        }
+
+        success = alert.send_signal(test_signal, historical_context=test_hist)
         print(f"Test signal sent: {success}")
     else:
         print("Use --test to send a test message")
