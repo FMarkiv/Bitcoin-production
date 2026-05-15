@@ -46,7 +46,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # v9 import - Updated from v8_production
 from v9_production import generate_signal, load_btc_data, compute_features, create_weekly_data, fetch_dvol_data
-from historical_context import get_historical_context, generate_historical_chart
+from historical_context import (
+    get_historical_context,
+    generate_historical_chart,
+    get_historical_context_by_trajectory,
+    generate_trajectory_chart,
+    DEFAULT_TRAJECTORY_LOOKBACK_DAYS,
+)
 
 
 # ============================================================================
@@ -566,6 +572,17 @@ def is_rebalance_time() -> bool:
 # MAIN BOT LOGIC
 # ============================================================================
 
+def _compute_prior_drawdown(data_df, lookback_days: int = DEFAULT_TRAJECTORY_LOOKBACK_DAYS) -> Optional[float]:
+    """Compute drawdown as of lookback_days ago, using ATH known at that time."""
+    if data_df is None or len(data_df) <= lookback_days:
+        return None
+    prior_idx = len(data_df) - 1 - lookback_days
+    prior_ath = data_df.iloc[:prior_idx + 1]['close'].max()
+    if prior_ath <= 0:
+        return None
+    return float((data_df.iloc[prior_idx]['close'] - prior_ath) / prior_ath)
+
+
 class TradingBot:
     """Main trading bot orchestrator"""
 
@@ -663,16 +680,32 @@ class TradingBot:
             logger.info(f"Signal: {signal['position']} @ {signal['leverage']}x")
             logger.info(f"Reasoning: {signal['reasoning']}")
 
-            # 3. Send signal alert with historical context
+            # 3. Send signal alert with trajectory-aware historical context
             if self.alert:
                 hist_context = None
                 chart_path = None
                 try:
                     data_df = load_btc_data(data_path)
-                    hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
-                    if hist_context and hist_context.get('sample_size', 0) >= 10:
-                        chart_path = 'temp_historical_chart.png'
-                        generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                    current_dd = signal.get('drawdown', 0)
+                    prior_dd = _compute_prior_drawdown(data_df)
+                    if prior_dd is not None:
+                        hist_context = get_historical_context_by_trajectory(
+                            current_drawdown=current_dd,
+                            prior_drawdown=prior_dd,
+                            price_data=data_df,
+                        )
+                        combined_n = (hist_context.get('combined') or {}).get('sample_size', 0) or 0
+                        if combined_n >= 10:
+                            chart_path = 'temp_historical_chart.png'
+                            generate_trajectory_chart(
+                                current_dd, prior_dd, hist_context, chart_path
+                            )
+                    else:
+                        # Not enough history for trajectory; fall back to pooled context
+                        hist_context = get_historical_context(current_dd, data_df)
+                        if hist_context and hist_context.get('sample_size', 0) >= 10:
+                            chart_path = 'temp_historical_chart.png'
+                            generate_historical_chart(current_dd, hist_context, chart_path)
                 except Exception as e:
                     logger.warning(f"Failed to generate historical context: {e}")
 
@@ -814,16 +847,32 @@ class TradingBot:
                 logger.info(f"Weekly signal: {signal['position']} @ {signal['leverage']}x")
                 logger.info(f"Reasoning: {signal['reasoning']}")
 
-                # Send signal alert with historical context
+                # Send signal alert with trajectory-aware historical context
                 if self.alert:
                     hist_context = None
                     chart_path = None
                     try:
                         data_df = load_btc_data(data_path)
-                        hist_context = get_historical_context(signal.get('drawdown', 0), data_df)
-                        if hist_context and hist_context.get('sample_size', 0) >= 10:
-                            chart_path = 'temp_historical_chart.png'
-                            generate_historical_chart(signal.get('drawdown', 0), hist_context, chart_path)
+                        current_dd = signal.get('drawdown', 0)
+                        prior_dd = _compute_prior_drawdown(data_df)
+                        if prior_dd is not None:
+                            hist_context = get_historical_context_by_trajectory(
+                                current_drawdown=current_dd,
+                                prior_drawdown=prior_dd,
+                                price_data=data_df,
+                            )
+                            combined_n = (hist_context.get('combined') or {}).get('sample_size', 0) or 0
+                            if combined_n >= 10:
+                                chart_path = 'temp_historical_chart.png'
+                                generate_trajectory_chart(
+                                    current_dd, prior_dd, hist_context, chart_path
+                                )
+                        else:
+                            # Not enough history for trajectory; fall back to pooled context
+                            hist_context = get_historical_context(current_dd, data_df)
+                            if hist_context and hist_context.get('sample_size', 0) >= 10:
+                                chart_path = 'temp_historical_chart.png'
+                                generate_historical_chart(current_dd, hist_context, chart_path)
                     except Exception as e:
                         logger.warning(f"Failed to generate historical context: {e}")
 
