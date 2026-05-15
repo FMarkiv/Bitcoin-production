@@ -13,11 +13,13 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import json
 
-# Trajectory-awareness defaults. The lookback window is best chosen
-# empirically (see docs/trajectory_lookback_sweep_prompt.md). 30d is a
-# starting gut-feel value; change here to update both stats generation
-# and the live signal call site.
-DEFAULT_TRAJECTORY_LOOKBACK_DAYS = 30
+# Trajectory-awareness defaults. The lookback window was chosen
+# empirically by sweep over L in {7..180}; see
+# analysis/TRAJECTORY_LOOKBACK_REPORT.md. L=90 is the smallest window
+# whose falling vs recovering separation is statistically robust on
+# both the 1Y horizon (edge +264%, t=+5.75) and the 3M horizon
+# (edge +76%, t=+4.27, relevant for the weekly rebalance cadence).
+DEFAULT_TRAJECTORY_LOOKBACK_DAYS = 90
 DEFAULT_TRAJECTORY_THRESHOLD = 0.03
 
 
