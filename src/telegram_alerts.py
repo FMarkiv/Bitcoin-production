@@ -44,9 +44,20 @@ def _timestamp() -> str:
 
 
 def _format_hist_context(hist: Optional[dict]) -> str:
-    """Format historical context block for any message type."""
+    """Format historical context block for any message type.
+
+    If hist contains the trajectory-aware shape (presence of
+    'current_trajectory'), delegate to historical_context.format_telegram_context.
+    """
     if not hist:
         return f"{ARROW} Historical context unavailable"
+
+    if 'current_trajectory' in hist:
+        try:
+            from historical_context import format_telegram_context
+            return format_telegram_context(hist)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"format_telegram_context failed, falling back: {e}")
 
     bucket = hist.get('dd_bucket', 'N/A')
 
@@ -252,11 +263,22 @@ class TelegramAlert:
 
         if chart_path and os.path.exists(chart_path):
             bucket = historical_context.get('dd_bucket', 'current') if historical_context else 'current'
-            sample = historical_context.get('sample_size', 0) if historical_context else 0
-            chart_caption = (
-                f"\U0001f4c8 Historical returns from {bucket} drawdown\n"
-                f"Based on {sample} historical instances"
-            )
+            if historical_context and 'current_trajectory' in historical_context:
+                traj = historical_context.get('current_trajectory', 'flat')
+                cur_stats = historical_context.get(traj, {}) or {}
+                cur_n = cur_stats.get('sample_size', 0) or 0
+                combined_n = (historical_context.get('combined') or {}).get('sample_size', 0) or 0
+                chart_caption = (
+                    f"\U0001f4c8 Historical returns from {bucket} drawdown\n"
+                    f"Trajectory: {traj.upper()} | "
+                    f"Relevant sample: n={cur_n} (total n={combined_n})"
+                )
+            else:
+                sample = historical_context.get('sample_size', 0) if historical_context else 0
+                chart_caption = (
+                    f"\U0001f4c8 Historical returns from {bucket} drawdown\n"
+                    f"Based on {sample} historical instances"
+                )
             self.send_photo(chart_path, chart_caption)
 
         return success
